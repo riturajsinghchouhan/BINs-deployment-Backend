@@ -12,7 +12,7 @@ const app = express();
 
 app.use(
   cors({
-    origin: "https://bins-deployment-frontend.onrender.com",
+    origin: "https://bin-deployment-frontend.onrender.com",
     methods: ["GET", "POST", "PUT", "DELETE"],
     credentials: true
   })
