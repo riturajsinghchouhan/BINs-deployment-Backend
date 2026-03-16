@@ -6,17 +6,27 @@ import authRoutes from './routes/authRoutes.js';
 import dustbinRoutes from './routes/dustbinRoutes.js';
 
 dotenv.config();
-
 connectDB();
 
 const app = express();
 
-app.use(cors());
+app.use(
+  cors({
+    origin: "https://bins-deployment-frontend.onrender.com",
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    credentials: true
+  })
+);
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
 app.use('/api/auth', authRoutes);
 app.use('/api/dustbins', dustbinRoutes);
+
+app.get("/", (req, res) => {
+  res.send("API is running");
+});
 
 const PORT = process.env.PORT || 5000;
 
