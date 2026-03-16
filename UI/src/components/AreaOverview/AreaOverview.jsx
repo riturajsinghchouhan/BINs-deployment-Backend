@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../app/context/AuthContext';
 import { useData } from '../../app/context/DataContext';
@@ -12,17 +12,119 @@ import {
     LogOut,
     User,
     ChevronRight,
-    PlusCircle
+    PlusCircle,
+    Map as MapIcon,
+    Moon,
+    Sun,
+    Zap
 } from 'lucide-react';
-import { useState } from 'react';
 import { toast } from 'sonner';
+import { MapContainer, TileLayer, Polygon, Popup, Tooltip, useMap } from 'react-leaflet';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import './AreaOverview.css';
+import LocationSearch from '../LocationSearch/LocationSearch';
+
+// Compute convex hull for zone polygon
+function computeConvexHull(points) {
+    if (points.length < 3) return points;
+    const cross = (O, A, B) =>
+        (A[0] - O[0]) * (B[1] - O[1]) - (A[1] - O[1]) * (B[0] - O[0]);
+    const sorted = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const lower = [];
+    for (const p of sorted) {
+        while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0)
+            lower.pop();
+        lower.push(p);
+    }
+    const upper = [];
+    for (const p of sorted.reverse()) {
+        while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0)
+            upper.pop();
+        upper.push(p);
+    }
+    upper.pop();
+    lower.pop();
+    return lower.concat(upper);
+}
+
+// Zone color palette — distinct colors for each area
+const ZONE_COLORS = [
+    { stroke: '#0d9488', fill: '#14b8a6' }, // teal
+    { stroke: '#2563eb', fill: '#3b82f6' }, // blue
+    { stroke: '#7c3aed', fill: '#8b5cf6' }, // violet
+    { stroke: '#db2777', fill: '#ec4899' }, // pink
+    { stroke: '#ea580c', fill: '#f97316' }, // orange
+    { stroke: '#059669', fill: '#10b981' }, // emerald
+    { stroke: '#4f46e5', fill: '#6366f1' }, // indigo
+    { stroke: '#b91c1c', fill: '#ef4444' }, // red
+];
+
+function getZoneColor(urgentBins, avgFill) {
+    if (urgentBins > 0 || avgFill >= 70) return { stroke: '#dc2626', fill: '#ef4444' };
+    if (avgFill >= 40) return { stroke: '#d97706', fill: '#f59e0b' };
+    return { stroke: '#16a34a', fill: '#22c55e' };
+}
+
+// Build polygon from area bins
+function buildAreaPolygon(bins) {
+    const coords = bins
+        .filter(b => b.latitude && b.longitude)
+        .map(b => [b.latitude, b.longitude]);
+
+    if (coords.length === 0) return null;
+
+    const avgLat = coords.reduce((s, c) => s + c[0], 0) / coords.length;
+    const avgLng = coords.reduce((s, c) => s + c[1], 0) / coords.length;
+
+    let polygon;
+    if (coords.length >= 3) {
+        polygon = computeConvexHull(coords);
+        polygon = polygon.map(p => {
+            const dLat = (p[0] - avgLat) * 0.2;
+            const dLng = (p[1] - avgLng) * 0.2;
+            return [p[0] + dLat, p[1] + dLng];
+        });
+    } else if (coords.length === 2) {
+        const pad = 0.002;
+        polygon = [
+            [coords[0][0] - pad, coords[0][1] - pad],
+            [coords[0][0] - pad, coords[1][1] + pad],
+            [coords[1][0] + pad, coords[1][1] + pad],
+            [coords[1][0] + pad, coords[0][1] - pad],
+        ];
+    } else {
+        const pad = 0.003;
+        polygon = [
+            [coords[0][0] - pad, coords[0][1] - pad],
+            [coords[0][0] - pad, coords[0][1] + pad],
+            [coords[0][0] + pad, coords[0][1] + pad],
+            [coords[0][0] + pad, coords[0][1] - pad],
+        ];
+    }
+
+    return { polygon, center: [avgLat, avgLng], binCount: coords.length };
+}
+
+// Fit map to all zone bounds
+function FitAllBounds({ allCoords }) {
+    const map = useMap();
+    useEffect(() => {
+        if (allCoords && allCoords.length > 0) {
+            const bounds = L.latLngBounds(allCoords.map(c => [c[0], c[1]]));
+            map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
+        }
+    }, [allCoords, map]);
+    return null;
+}
 
 export default function AreaOverview() {
     const { user, logout } = useAuth();
     const { dustbins, refreshDustbins } = useData();
     const navigate = useNavigate();
     const [showAddDialog, setShowAddDialog] = useState(false);
+    const [mapExpanded, setMapExpanded] = useState(true);
+    const [mapTheme, setMapTheme] = useState('light');
     const [formData, setFormData] = useState({
         binNumber: '',
         location: '',
@@ -53,6 +155,8 @@ export default function AreaOverview() {
         }
     };
 
+
+
     // Group bins by area and calculate statistics
     const areaStats = useMemo(() => {
         const groupedByArea = dustbins.reduce((acc, bin) => {
@@ -72,6 +176,7 @@ export default function AreaOverview() {
             const beingEmptied = bins.filter(b => b.status === 'being-emptied').length;
             const averageFillLevel = bins.reduce((sum, b) => sum + b.fillLevel, 0) / totalBins;
             const urgentBins = bins.filter(b => b.fillLevel >= 80).length;
+            const polygonData = buildAreaPolygon(bins);
 
             return {
                 area,
@@ -81,11 +186,12 @@ export default function AreaOverview() {
                 emptyBins,
                 beingEmptied,
                 averageFillLevel,
-                urgentBins
+                urgentBins,
+                bins,
+                polygonData
             };
         });
 
-        // Sort by urgentBins descending, then by averageFillLevel descending
         return stats.sort((a, b) => {
             if (b.urgentBins !== a.urgentBins) {
                 return b.urgentBins - a.urgentBins;
@@ -93,6 +199,20 @@ export default function AreaOverview() {
             return b.averageFillLevel - a.averageFillLevel;
         });
     }, [dustbins]);
+
+    // Collect all bin coordinates for map bounds
+    const allBinCoords = useMemo(() => {
+        return dustbins
+            .filter(b => b.latitude && b.longitude)
+            .map(b => [b.latitude, b.longitude]);
+    }, [dustbins]);
+
+    const mapCenter = useMemo(() => {
+        if (allBinCoords.length === 0) return [22.7196, 75.8577];
+        const avgLat = allBinCoords.reduce((s, c) => s + c[0], 0) / allBinCoords.length;
+        const avgLng = allBinCoords.reduce((s, c) => s + c[1], 0) / allBinCoords.length;
+        return [avgLat, avgLng];
+    }, [allBinCoords]);
 
     const handleLogout = () => {
         logout();
@@ -231,6 +351,126 @@ export default function AreaOverview() {
                         </div>
                     </div>
                 </div>
+
+                {/* ═══════════════ ALL-AREAS MAP SECTION ═══════════════ */}
+                {allBinCoords.length > 0 && (
+                    <div className="ao-map-section">
+                        <div className="ao-map-header">
+                            <div className="ao-map-header-left">
+                                <div className="ao-map-icon-wrapper">
+                                    <MapIcon className="w-5 h-5" />
+                                </div>
+                                <div>
+                                    <h2 className="ao-map-title">Smart City Zone Map</h2>
+                                    <p className="ao-map-subtitle">
+                                        {areaStats.length} zones · {totalBins} IoT dustbins · Click a zone to view details
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="ao-map-controls">
+                                <div className="ao-map-legend-inline">
+                                    <span className="ao-legend-chip ao-legend-green">Healthy</span>
+                                    <span className="ao-legend-chip ao-legend-yellow">Warning</span>
+                                    <span className="ao-legend-chip ao-legend-red">Critical</span>
+                                </div>
+                                <button
+                                    className="ao-map-toggle-btn ao-theme-toggle"
+                                    onClick={() => setMapTheme(mapTheme === 'light' ? 'dark' : 'light')}
+                                    title={mapTheme === 'light' ? 'Switch to Dark Map' : 'Switch to Light Map'}
+                                >
+                                    {mapTheme === 'light' ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4 text-yellow-500" />}
+                                </button>
+                                <button
+                                    className="ao-map-toggle-btn"
+                                    onClick={() => setMapExpanded(!mapExpanded)}
+                                >
+                                    {mapExpanded ? 'Collapse' : 'Expand'}
+                                </button>
+                            </div>
+                        </div>
+
+                        {mapExpanded && (
+                            <div className="ao-map-wrapper">
+                                <MapContainer
+                                    center={mapCenter}
+                                    zoom={13}
+                                    className="ao-leaflet-map"
+                                    scrollWheelZoom={true}
+                                    zoomControl={true}
+                                >
+                                    <TileLayer
+                                        attribution='&copy; <a href="https://carto.com/">CARTO</a>'
+                                        url={mapTheme === 'light'
+                                            ? "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
+                                            : "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+                                        }
+                                    />
+                                    <FitAllBounds allCoords={allBinCoords} />
+
+                                    {areaStats.map((area, index) => {
+                                        if (!area.polygonData) return null;
+                                        const zoneColor = getZoneColor(area.urgentBins, area.averageFillLevel);
+
+                                        return (
+                                            <Polygon
+                                                key={area.area}
+                                                positions={area.polygonData.polygon}
+                                                pathOptions={{
+                                                    color: zoneColor.stroke,
+                                                    fillColor: zoneColor.fill,
+                                                    fillOpacity: 0.25,
+                                                    weight: 2.5,
+                                                }}
+                                                eventHandlers={{
+                                                    click: () => handleAreaClick(area.area),
+                                                    mouseover: (e) => {
+                                                        e.target.setStyle({ fillOpacity: 0.4, weight: 3 });
+                                                    },
+                                                    mouseout: (e) => {
+                                                        e.target.setStyle({ fillOpacity: 0.25, weight: 2.5 });
+                                                    },
+                                                }}
+                                            >
+                                                <Tooltip
+                                                    direction="center"
+                                                    permanent
+                                                    className="ao-zone-label"
+                                                >
+                                                    <span className="ao-zone-label-text">{area.area}</span>
+                                                </Tooltip>
+                                                <Popup>
+                                                    <div className="ao-zone-popup">
+                                                        <h3 className="ao-zone-popup-title">{area.area}</h3>
+                                                        <div className="ao-zone-popup-stats">
+                                                            <div className="ao-zone-popup-stat">
+                                                                <span className="ao-zone-popup-label">Total Bins</span>
+                                                                <span className="ao-zone-popup-value">{area.totalBins}</span>
+                                                            </div>
+                                                            <div className="ao-zone-popup-stat">
+                                                                <span className="ao-zone-popup-label">Avg Fill</span>
+                                                                <span className="ao-zone-popup-value" style={{ color: zoneColor.stroke }}>{area.averageFillLevel.toFixed(0)}%</span>
+                                                            </div>
+                                                            <div className="ao-zone-popup-stat">
+                                                                <span className="ao-zone-popup-label">Urgent</span>
+                                                                <span className="ao-zone-popup-value" style={{ color: area.urgentBins > 0 ? '#dc2626' : '#16a34a' }}>{area.urgentBins}</span>
+                                                            </div>
+                                                        </div>
+                                                        <div className="ao-zone-popup-bar-row">
+                                                            <div className="ao-zone-popup-bar-track">
+                                                                <div className="ao-zone-popup-bar-fill" style={{ width: `${area.averageFillLevel}%`, backgroundColor: zoneColor.stroke }} />
+                                                            </div>
+                                                        </div>
+                                                        <p className="ao-zone-popup-hint">Click to view zone details →</p>
+                                                    </div>
+                                                </Popup>
+                                            </Polygon>
+                                        );
+                                    })}
+                                </MapContainer>
+                            </div>
+                        )}
+                    </div>
+                )}
 
                 {/* Area Cards */}
                 <div className="area-overview-area-header">
@@ -389,23 +629,23 @@ export default function AreaOverview() {
 
                                 <div>
                                     <label style={{ display: 'block', textTransform: 'uppercase', color: '#6b7280', fontSize: '0.75rem', fontWeight: '600', marginBottom: '0.25rem' }}>
-                                        Location Area
+                                        Location Search & Area
                                     </label>
-                                    <input
-                                        placeholder="Engineering Block A"
-                                        value={formData.location}
-                                        onChange={(e) => setFormData({ ...formData, location: e.target.value })}
-                                        style={{
-                                            width: '100%',
-                                            padding: '0.5rem 0.75rem',
-                                            borderRadius: '0.5rem',
-                                            border: '1px solid #e5e7eb',
-                                            fontSize: '0.875rem'
+                                    <LocationSearch
+                                        initialValue={formData.location}
+                                        onSelect={(data) => {
+                                            setFormData({
+                                                ...formData,
+                                                location: data.address,
+                                                latitude: data.lat,
+                                                longitude: data.lon
+                                            });
                                         }}
                                     />
                                 </div>
 
                                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+
                                     <div>
                                         <label style={{ display: 'block', textTransform: 'uppercase', color: '#6b7280', fontSize: '0.75rem', fontWeight: '600', marginBottom: '0.25rem' }}>
                                             Latitude
