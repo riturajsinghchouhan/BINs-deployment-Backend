@@ -95,10 +95,41 @@ const deleteDustbin = async (req, res) => {
     }
 };
 
+// @desc    Update bin from ESP32
+// @route   POST /api/dustbins/update-bin
+// @access  Public
+const updateBinFromDevice = async (req, res) => {
+    const { binNumber, fillLevel } = req.body;
+
+    try {
+        const dustbin = await Dustbin.findOne({ binNumber });
+
+        if (!dustbin) {
+            return res.status(404).json({ message: "Bin not found" });
+        }
+
+        dustbin.fillLevel = fillLevel;
+
+        // auto status
+        if (fillLevel <= 20) dustbin.status = "empty";
+        else if (fillLevel <= 50) dustbin.status = "half";
+        else if (fillLevel <= 80) dustbin.status = "almost full";
+        else dustbin.status = "full";
+
+        await dustbin.save();
+
+        res.status(200).json({ message: "Updated successfully" });
+
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 export {
     getDustbins,
     getDustbin,
     createDustbin,
     updateDustbin,
-    deleteDustbin
+    deleteDustbin,
+    updateBinFromDevice
 };
