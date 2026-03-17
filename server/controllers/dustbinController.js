@@ -101,6 +101,10 @@ const deleteDustbin = async (req, res) => {
 const updateBinFromDevice = async (req, res) => {
     const { binNumber, fillLevel } = req.body;
 
+    if (!binNumber || fillLevel === undefined) {
+        return res.status(400).json({ message: "Missing data" });
+    }
+
     try {
         const dustbin = await Dustbin.findOne({ binNumber });
 
@@ -110,11 +114,22 @@ const updateBinFromDevice = async (req, res) => {
 
         dustbin.fillLevel = fillLevel;
 
-        // auto status
-        if (fillLevel <= 20) dustbin.status = "empty";
-        else if (fillLevel <= 50) dustbin.status = "half";
-        else if (fillLevel <= 80) dustbin.status = "almost full";
-        else dustbin.status = "full";
+        // ✅ STATUS FIX (as per your schema)
+        if (fillLevel <= 20) {
+            dustbin.status = "empty";
+        } 
+        else if (fillLevel <= 70) {
+            dustbin.status = "half-full";
+        } 
+        else {
+            dustbin.status = "full";
+        }
+
+        // ✅ optional: lastEmptied update
+        if (fillLevel === 0) {
+            dustbin.lastEmptied = new Date();
+            dustbin.status = "being-emptied";
+        }
 
         await dustbin.save();
 
