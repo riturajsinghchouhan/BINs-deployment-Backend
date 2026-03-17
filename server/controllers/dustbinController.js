@@ -1,5 +1,6 @@
 import Dustbin from '../models/Dustbin.js';
 import User from '../models/User.js';
+import { sendSMS } from '../utils/smsService.js';
 
 // @desc    Get all dustbins
 // @route   GET /api/dustbins
@@ -117,10 +118,10 @@ const updateBinFromDevice = async (req, res) => {
         // ✅ STATUS FIX (as per your schema)
         if (fillLevel <= 20) {
             dustbin.status = "empty";
-        } 
+        }
         else if (fillLevel <= 70) {
             dustbin.status = "half-full";
-        } 
+        }
         else {
             dustbin.status = "full";
         }
@@ -129,6 +130,24 @@ const updateBinFromDevice = async (req, res) => {
         if (fillLevel === 0) {
             dustbin.lastEmptied = new Date();
             dustbin.status = "being-emptied";
+        }
+
+        // ✅ SMS Alert for FULL bin
+        if (dustbin.status === "full") {
+            try {
+                // Find assigned worker to get their phone number
+                const worker = await User.findById(dustbin.assignedWorkerId);
+                if (worker && worker.phone) {
+                    const message = `🚨 ALERT: Bin #${dustbin.binNumber} at ${dustbin.location} is FULL (${fillLevel}%). Please attend to it immediately.`;
+                    await sendSMS(worker.phone, message);
+                    console.log(`Alert sent to ${worker.name} for Bin #${dustbin.binNumber}`);
+                } else {
+                    console.log(`No worker or phone found for Bin #${dustbin.binNumber}`);
+                }
+            } catch (smsError) {
+                console.error("Failed to send alert:", smsError.message);
+                // We don't fail the whole request just because SMS failed
+            }
         }
 
         await dustbin.save();
